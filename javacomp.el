@@ -71,6 +71,8 @@ paths are resolved against the project root directory."
 (javacomp-def-permanent-buffer-local javacomp-project-root nil)
 (javacomp-def-permanent-buffer-local javacomp-buffer-dirty nil)
 (javacomp-def-permanent-buffer-local javacomp-buffer-tmp-file nil)
+(javacomp-def-permanent-buffer-local javacomp--buffer-version 0)
+(javacomp-def-permanent-buffer-local javacomp--document-opened nil)
 
 (defvar javacomp-server-buffer-name "*javacomp-server*")
 (defvar javacomp-requestcounter 0)
@@ -134,7 +136,6 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
 
 (defun javacomp-decode-response (process)
   (with-current-buffer (process-buffer process)
-    (message "(javacomp) current buffer:\n%s" (buffer-string))
     (let ((length (javacomp-decode-response-legth))
           (json-object-type 'plist)
           (json-array-type 'list))
@@ -172,7 +173,8 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
   (when (not (javacomp-current-server))
     (error "Server does not exist. Run M-x javacomp-restart-server to start it again"))
 
-  ;; (javacomp-sync-buffer-contents)
+
+  (javacomp-sync-buffer-contents)
 
   (let* ((request-id (javacomp-next-request-id))
          (request `(:method ,name :id ,request-id :params ,args)))
@@ -234,6 +236,7 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
     (set-process-sentinel process #'javacomp-net-sentinel)
     (set-process-query-on-exit-flag process nil)
     (process-put process 'project-root (javacomp-project-root))
+    (javacomp--set-server-initialized process nil)
     (puthash (javacomp-project-root) process javacomp-servers)
     (message "(%s) JavaComp server started successfully." (javacomp-project-name))
     (javacomp-command:initialize)))
@@ -253,28 +256,108 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
           (funcall fn))))))
 
 (defun javacomp-configure-buffer ()
-  ;; (javacomp-command:openfile)
+  (javacomp-command:did-open-text-document)
   ;; (javacomp-command:configure)
   )
 
 (defun javacomp-cleanup-buffer ()
-  ;; (javacomp-command:closefile)
-  ;; (javacomp-remove-tmp-file)
-  )
+  (javacomp-command:did-close-text-document))
+
+(defun javacomp-handle-change (_beg _end _len)
+  "Mark buffer as dirty."
+  (setq javacomp-buffer-dirty t))
+
+(defun javacomp--buffer-uri ()
+  "Return the URI for the current buffer."
+  (and buffer-file-name (concat "file://" buffer-file-name)))
+
+(defun javacomp--buffer-identifier ()
+  "Get the TextDocumentIdentifier JSON message for current buffer."
+  `(:uri ,(javacomp--buffer-uri)))
+
+(defun javacomp--buffer-versioned-identifier ()
+  "Get the VersionedTextDocumentIdentifier JSON message for current buffer."
+  (let ((uri (javacomp--buffer-uri))
+        (new-version (cl-incf javacomp-request-counter)))
+    `(:uri ,uri :version ,new-version)))
+
+(defun javacomp--buffer-content ()
+  "Get the whole buffer content regardless it's narrowed or not."
+  (save-restriction
+    (widen)
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(defun javacomp--language-id ()
+  "Get the language ID for the current buffer."
+  "java")
+
+(defun javacomp-sync-buffer-contents ()
+  "Send buffer content to the server if it has been changed since last sync."
+  (when (and javacomp--document-opened javacomp-buffer-dirty)
+    (setq javacomp-buffer-dirty nil)
+    (let* ((content (javacomp--buffer-content))
+           (content-changes `(:text ,content))
+           (text-document (javacomp--buffer-versioned-identifier)))
+      (javacomp-send-notification "textDocument/didChange"
+                                  `(:textDocument ,text-document :contentChanges ,content-changes)))))
+
+(defun javacomp--set-server-initialized (server initialized)
+  "Set the initialized state of SERVER to INITIALIZED."
+  (when server
+    (process-put server 'initialized initialized)))
+
+(defun javacomp--server-initialized-p (server)
+  "Determine whether SERVER is initialized."
+  (process-get server 'initialized))
+
+
+;;; Helpers
+
+(defun javacomp-response-success-p (response)
+  (and response (not (plist-get response :error))))
+
+(defmacro javacomp-on-response-success (response &rest body)
+  (declare (indent 1))
+  `(if (javacomp-response-success-p ,response)
+       ,@body
+     (-when-let (err (plist-get response :error))
+       (message "(JavaComp) response error: %s" err))
+     nil))
 
 ;;; Requests
 
 (defun javacomp-command:initialize ()
   "Send `initialize' request to JavaComp server."
-  (javacomp-send-request "initialize"
-                         `(:processId ,(emacs-pid) :rootUri ,(javacomp-project-root))
-                         (lambda (resp) (message "initialized: %s" resp))))
+  (let ((callback (lambda (resp)
+                    (javacomp-on-response-success resp
+                      (javacomp--set-server-initialized (javacomp-current-server) t))))
+        (root-uri (concat "file://" (javacomp-project-root))))
+    (javacomp-send-request "initialize"
+                           `(:processId ,(emacs-pid) :rootUri ,root-uri)
+                           callback)))
 
 (defun javacomp-command:shutdown ()
   "Send `shutdown' request to JavaComp server."
-  (javacomp-send-request "shutdown"
-                         nil
-                         (lambda (resp) (message "shutdown: %s" resp))))
+  (let ((callback (lambda (_resp)
+                    (javacomp--set-server-initialized (javacomp-current-server) nil))))
+    (javacomp-send-request "shutdown" nil callback)))
+
+(defun javacomp-command:did-open-text-document ()
+  "Send `textDocument/didOpen' notification to JavaComp server."
+  (let* ((text-document `(:uri ,(javacomp--buffer-uri)
+                               :languageId ,(javacomp--language-id)
+                               :version ,javacomp--buffer-version
+                               :text ,(javacomp--buffer-content))))
+    (javacomp-send-notification "textDocument/didOpen"
+                                `(:textDocument ,text-document))
+    (setq javacomp--document-opened t)))
+
+(defun javacomp-command:did-close-text-document ()
+  "Send `textDocument/didClose' notification to JavaComp server."
+  (when javacomp--document-opened
+    (setq javacomp--document-opened nil)
+    (javacomp-send-notification "textDocument/didClose"
+                                `(:textDocument ,(javacomp--buffer-identifier)))))
 
 (defun javacomp-notification:exit ()
   "Send `exit' notification to JavaComp server."
@@ -291,25 +374,25 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
 (defun javacomp--enable ()
   "Setup `javacomp-mode' in current buffer."
   (javacomp-start-server-if-required)
+  (javacomp-configure-buffer)
   ;; (set (make-local-variable 'eldoc-documentation-function)
   ;;      'javacomp-eldoc-function)
   ;; (set (make-local-variable 'imenu-auto-rescan) t)
   ;; (set (make-local-variable 'imenu-create-index-function)
   ;;      'javacomp-imenu-index)
 
-  ;; (add-hook 'after-save-hook 'javacomp-sync-buffer-contents nil t)
+  (add-hook 'after-save-hook 'javacomp-sync-buffer-contents nil t)
   ;; (add-hook 'after-save-hook 'javacomp-auto-compile-file nil t)
-  ;; (add-hook 'after-change-functions 'javacomp-handle-change nil t)
+  (add-hook 'after-change-functions 'javacomp-handle-change nil t)
   (add-hook 'kill-buffer-hook 'javacomp-cleanup-buffer nil t)
-  (add-hook 'hack-local-variables-hook 'javacomp-configure-buffer nil t)
-  (javacomp-configure-buffer))
+  (add-hook 'hack-local-variables-hook 'javacomp-configure-buffer nil t))
 
 (defun javacomp--disable ()
   "Disable `javacomp-mode' in current buffer and clean up."
   (javacomp-shutdown-current-project)
-  ;; (remove-hook 'after-save-hook 'javacomp-sync-buffer-contents)
+  (remove-hook 'after-save-hook 'javacomp-sync-buffer-contents)
   ;; (remove-hook 'after-save-hook 'javacomp-auto-compile-file)
-  ;; (remove-hook 'after-change-functions 'javacomp-handle-change)
+  (remove-hook 'after-change-functions 'javacomp-handle-change)
   (remove-hook 'kill-buffer-hook 'javacomp-cleanup-buffer)
   (remove-hook 'hack-local-variables-hook 'javacomp-configure-buffer)
   (javacomp-cleanup-buffer)
@@ -323,9 +406,7 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
 (defun javacomp-shutdown-current-project ()
   "Shutdown the current project and the JavaComp server if it's running."
   (interactive)
-  (message "(Javacomp) shutting down current project: %s" javacomp-servers)
   (when (javacomp-current-server)
-    (message "(Javacomp) really shutting down current project")
     (condition-case err
         (progn
           (javacomp-command:shutdown)
