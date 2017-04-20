@@ -305,10 +305,10 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
   (when (and javacomp--document-opened javacomp-buffer-dirty)
     (setq javacomp-buffer-dirty nil)
     (let* ((content (javacomp--buffer-content))
-           (content-changes `(:text ,content))
+           (content-change `(:text ,content))
            (text-document (javacomp--buffer-versioned-identifier)))
       (javacomp-send-notification "textDocument/didChange"
-                                  `(:textDocument ,text-document :contentChanges ,content-changes)))))
+                                  `(:textDocument ,text-document :contentChanges [,content-change])))))
 
 (defun javacomp--set-server-initialized (server initialized)
   "Set the initialized state of SERVER to INITIALIZED."
