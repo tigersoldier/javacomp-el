@@ -114,6 +114,15 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
       (kill-buffer (process-buffer process)))
     (javacomp-cleanup-project project-root)))
 
+(defun javacomp-cleanup-buffer-callbacks ()
+  (let ((error-response `(:errors "Cleaning up buffer callbacks")))
+    (maphash
+     (lambda (id callback)
+       (when (equal (current-buffer) (car callback))
+         (funcall (cdr callback) error-response)
+         (remhash id javacomp-response-callbacks)))
+     javacomp-response-callbacks)))
+
 (defun javacomp-cleanup-project (project-root)
   (javacomp-each-buffer project-root
                         (lambda ()
