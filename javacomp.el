@@ -66,6 +66,9 @@ paths are resolved against the project root directory."
      (make-variable-buffer-local ',name)
      (put ',name 'permanent-local t)))
 
+(defvar javacomp-completion-detailed nil
+  "Completion dropdown will contain detailed method information if set to non-nil.")
+
 (defvar javacomp-request-counter 0)
 
 (javacomp-def-permanent-buffer-local javacomp-project-root nil)
@@ -206,7 +209,7 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
                    "Content-Type: application/javacomp-el;charset=utf8\r\n"
                    "\r\n"
                    content)))
-    (message "(%s) sending message:\n%s" (javacomp-project-name) message)
+    ;; (message "(%s) sending message:\n%s" (javacomp-project-name) message)
     (process-send-string (javacomp-current-server) message)))
 
 (defun javacomp-send-request-sync (name args)
@@ -296,6 +299,31 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
     (widen)
     (buffer-substring-no-properties (point-min) (point-max))))
 
+(defun javacomp--line-number-at-pos (&optional pos)
+  "The line number where the cursor is at.
+
+The position of the cursor is specified by POS.  If POS is nil, use the current
+cursor position.
+
+Line number is 1-based."
+  (let ((p (or pos (point))))
+    (if (= (point-min) 1)
+        (line-number-at-pos p)
+      (save-excursion
+        (save-restriction
+          (widen)
+          (line-number-at-pos p))))))
+
+(defun javacomp--character-offset-in-line ()
+  "Number of characters present from the begining of line to cursor in current line.
+
+offset is 1-based."
+  (1+ (- (point) (line-beginning-position))))
+
+(defun javacomp--buffer-current-position ()
+  "Get a Position message for the cursor position in the current buffer."
+  `(:line ,(javacomp--line-number-at-pos) :character ,(javacomp--character-offset-in-line)))
+
 (defun javacomp--language-id ()
   "Get the language ID for the current buffer."
   "java")
@@ -323,9 +351,11 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
 ;;; Helpers
 
 (defun javacomp-response-success-p (response)
+  "Determine whether RESPONSE is a successful response."
   (and response (not (plist-get response :error))))
 
 (defmacro javacomp-on-response-success (response &rest body)
+  "If RESPONSE is a successful response, execute BODY."
   (declare (indent 1))
   `(if (javacomp-response-success-p ,response)
        ,@body
@@ -371,6 +401,93 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
 (defun javacomp-notification:exit ()
   "Send `exit' notification to JavaComp server."
   (javacomp-send-notification "exit" nil))
+
+;;; Auto completion
+
+(defconst javacomp--completion-kinds-annotation
+  ;; See CompletionItemKind enum defined in
+  ;; https://github.com/Microsoft/language-server-protocol/blob/master/protocol.md#textDocument_completion
+  '(nil
+    nil ;; Text
+    " m" ;; Method
+    " ƒ" ;; Function
+    " c" ;; Constructor
+    " v" ;; Field
+    " v" ;; Variable
+    " C" ;; Class
+    " I" ;; Interface
+    " M" ;; Module
+    " p" ;; Property
+    " u" ;; Unit
+    " v" ;; Value
+    " E" ;; Enum
+    " k" ;; Keyword
+    " s" ;; Snippet
+    " c" ;; Color
+    " f" ;; File
+    " r" ;; Reference
+    )
+  "A list mapping CompletionItemKind enum values to completion annotation strings")
+
+(defun javacomp-completion-annotation (name)
+  (if javacomp-completion-detailed
+      ;; Get everything before the first newline, if any, because company-mode
+      ;; wants single-line annotations.
+      (car (split-string (javacomp-completion-meta name) "\n"))
+    (let ((item-kind (plist-get (get-text-property 0 'completion-item name) :kind)))
+      (nth item-kind javacomp--completion-kinds-annotation))))
+
+(defun javacomp-completion-prefix ()
+  ; TODO: Use server provided triggers.
+  (company-grab-symbol-cons "\\." 1))
+
+(defun javacomp-annotate-completions (completion-list prefix text-document-position)
+  (-map
+   (lambda (completion-item)
+     (let ((label (plist-get completion-item :label)))
+       (put-text-property 0 1 'text-document-position text-document-position label)
+       (put-text-property 0 1 'completion-item completion-item label)
+       label))
+   (-filter
+    (lambda (completion-item)
+      (string-prefix-p prefix (plist-get completion-item :label)))
+    (plist-get completion-list :items))))
+
+(defun javacomp-command:completion-text-document (prefix cb)
+  (let* ((text-document-position
+          `(:textDocument ,(javacomp--buffer-identifier) :position ,(javacomp--buffer-current-position))))
+    (javacomp-send-request "textDocument/completion"
+                         text-document-position
+                         (lambda (response)
+                           (funcall
+                            cb
+                            (when (javacomp-response-success-p response)
+                              (javacomp-annotate-completions (plist-get response :result) prefix text-document-position)))))))
+
+;;;###autoload
+(defun company-javacomp (command &optional arg &rest ignored)
+  (interactive (list 'interactive))
+  (cl-case command
+    (interactive (company-begin-backend 'company-javacomp))
+    (prefix (and
+             (bound-and-true-p javacomp-mode)
+             ;; (-any-p #'derived-mode-p javacomp-supported-modes)
+             (javacomp-current-server)
+             (not (company-in-string-or-comment))
+             (or (javacomp-completion-prefix) 'stop)))
+    (candidates (cons :async
+                      (lambda (cb)
+                        (javacomp-command:completion-text-document arg cb))))
+    (sorted t)
+    (ignore-case t)
+    ;; (meta (javacomp-completion-meta arg))
+    (annotation (javacomp-completion-annotation arg))
+    ;; (doc-buffer (javacomp-completion-doc-buffer arg))
+    ))
+
+(eval-after-load 'company
+  '(progn
+     (cl-pushnew 'company-javacomp company-backends)))
 
 ;;; Mode
 
