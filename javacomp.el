@@ -269,11 +269,18 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
 
 (defun javacomp-configure-buffer ()
   (javacomp-command:did-open-text-document)
+  (let ((buffers (javacomp--server-get 'javacomp-buffers)))
+    (javacomp--server-put 'javacomp-buffers (cons (current-buffer) buffers)))
   ;; (javacomp-command:configure)
   )
 
 (defun javacomp-cleanup-buffer ()
-  (javacomp-command:did-close-text-document))
+  (javacomp-command:did-close-text-document)
+  (let* ((buffers (javacomp--server-get 'javacomp-buffers))
+         (remain-buffers (delq (current-buffer) buffers)))
+    (if remain-buffers
+        (javacomp--server-put 'javacomp-buffers remain-buffers)
+      (javacomp-shutdown-current-project))))
 
 (defun javacomp-handle-change (_beg _end _len)
   "Mark buffer as dirty."
@@ -362,6 +369,16 @@ offset is 1-based."
      (-when-let (err (plist-get response :error))
        (message "(JavaComp) response error: %s" err))
      nil))
+
+(defun javacomp--server-get (propname)
+  "Return the value of current server's PROPNAME property."
+  (-when-let (server (javacomp-current-server))
+    (process-get server propname)))
+
+(defun javacomp--server-put (propname value)
+  "Change current server's PROPNAME property to VALUE."
+  (-when-let (server (javacomp-current-server))
+    (process-put server propname value)))
 
 ;;; Requests
 
@@ -515,7 +532,6 @@ offset is 1-based."
 
 (defun javacomp--disable ()
   "Disable `javacomp-mode' in current buffer and clean up."
-  (javacomp-shutdown-current-project)
   (remove-hook 'after-save-hook 'javacomp-sync-buffer-contents)
   ;; (remove-hook 'after-save-hook 'javacomp-auto-compile-file)
   (remove-hook 'after-change-functions 'javacomp-handle-change)
