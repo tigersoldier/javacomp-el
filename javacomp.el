@@ -70,12 +70,13 @@ paths are resolved against the project root directory."
   "Completion dropdown will contain detailed method information if set to non-nil.")
 
 (defvar javacomp-request-counter 0)
+(defvar javacomp--server-id 0)
 
 (javacomp-def-permanent-buffer-local javacomp-project-root nil)
 (javacomp-def-permanent-buffer-local javacomp-buffer-dirty nil)
 (javacomp-def-permanent-buffer-local javacomp-buffer-tmp-file nil)
 (javacomp-def-permanent-buffer-local javacomp--buffer-version 0)
-(javacomp-def-permanent-buffer-local javacomp--document-opened nil)
+(javacomp-def-permanent-buffer-local javacomp--buffer-server-id nil)
 
 (defvar javacomp-server-buffer-name "*javacomp-server*")
 (defvar javacomp-requestcounter 0)
@@ -248,6 +249,7 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
     (set-process-sentinel process #'javacomp-net-sentinel)
     (set-process-query-on-exit-flag process nil)
     (process-put process 'project-root (javacomp-project-root))
+    (process-put process 'server-id (cl-incf javacomp--server-id))
     (javacomp--set-server-initialized process nil)
     (puthash (javacomp-project-root) process javacomp-servers)
     (message "(%s) JavaComp server started successfully." (javacomp-project-name))
@@ -337,13 +339,15 @@ offset is 1-based."
 
 (defun javacomp-sync-buffer-contents ()
   "Send buffer content to the server if it has been changed since last sync."
-  (when (and javacomp--document-opened javacomp-buffer-dirty)
+  (when (and (javacomp-current-server) javacomp-buffer-dirty)
     (setq javacomp-buffer-dirty nil)
-    (let* ((content (javacomp--buffer-content))
-           (content-change `(:text ,content))
-           (text-document (javacomp--buffer-versioned-identifier)))
-      (javacomp-send-notification "textDocument/didChange"
-                                  `(:textDocument ,text-document :contentChanges [,content-change])))))
+    (if (not (javacomp--document-opened))
+        (javacomp-command:did-open-text-document)
+      (let* ((content (javacomp--buffer-content))
+             (content-change `(:text ,content))
+             (text-document (javacomp--buffer-versioned-identifier)))
+        (javacomp-send-notification "textDocument/didChange"
+                                    `(:textDocument ,text-document :contentChanges [,content-change]))))))
 
 (defun javacomp--set-server-initialized (server initialized)
   "Set the initialized state of SERVER to INITIALIZED."
@@ -380,6 +384,14 @@ offset is 1-based."
   (-when-let (server (javacomp-current-server))
     (process-put server propname value)))
 
+(defun javacomp--current-server-id ()
+  "Return the ID of the current server, or nil if server is not started."
+  (javacomp--server-get 'server-id))
+
+(defun javacomp--document-opened ()
+  "Determine whether textDocument/didOpen notification is sent to the current server."
+  (eq javacomp--buffer-server-id (javacomp--current-server-id)))
+
 ;;; Requests
 
 (defun javacomp-command:initialize ()
@@ -406,12 +418,12 @@ offset is 1-based."
                                :text ,(javacomp--buffer-content))))
     (javacomp-send-notification "textDocument/didOpen"
                                 `(:textDocument ,text-document))
-    (setq javacomp--document-opened t)))
+    (setq javacomp--buffer-server-id (javacomp--current-server-id))))
 
 (defun javacomp-command:did-close-text-document ()
   "Send `textDocument/didClose' notification to JavaComp server."
-  (when javacomp--document-opened
-    (setq javacomp--document-opened nil)
+  (when (javacomp--document-opened)
+    (setq javacomp--buffer-server-id nil)
     (javacomp-send-notification "textDocument/didClose"
                                 `(:textDocument ,(javacomp--buffer-identifier)))))
 
@@ -444,9 +456,10 @@ offset is 1-based."
     " f" ;; File
     " r" ;; Reference
     )
-  "A list mapping CompletionItemKind enum values to completion annotation strings")
+  "A list mapping CompletionItemKind enum values to completion annotation strings.")
 
 (defun javacomp-completion-annotation (name)
+  "Return a short string of the type of the completion item NAME."
   (if javacomp-completion-detailed
       ;; Get everything before the first newline, if any, because company-mode
       ;; wants single-line annotations.
