@@ -557,6 +557,14 @@ offset is 1-based."
        (message (error-message-string err))))
     (javacomp-cleanup-project (javacomp-project-root))))
 
+(defun javacomp-restart-server ()
+  "Restarts the JavaComp server for the current project if enabled."
+  (interactive)
+  (-when-let (server (javacomp-current-server))
+    (delete-process server))
+  (javacomp-start-server)
+  (javacomp-each-buffer (javacomp-project-root) #'javacomp-configure-buffer))
+
 ;;;###autoload
 (define-minor-mode javacomp-mode
   "Minor mode for JavaComp.
