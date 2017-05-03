@@ -59,6 +59,24 @@ paths are resolved against the project root directory."
   :type '(choice (const nil) string)
   :group 'javacomp)
 
+(defcustom javacomp-options-log-path ""
+  "Server option for the path of the log file.
+
+If it's empty, the server doesn't write any logs to file."
+  :type 'string
+  :group 'javacomp)
+
+(defcustom javacomp-options-log-level nil
+  "Server option for the path of the log level."
+  :type '(choice (const nil)
+                 (const "severe")
+                 (const "warning")
+                 (const "info")
+                 (const "fine")
+                 (const "finer")
+                 (const "finest"))
+  :group 'javacomp)
+
 (defmacro javacomp-def-permanent-buffer-local (name &optional init-value)
   "Declare NAME as buffer local variable with initial value INIT-VALUE."
   `(progn
@@ -394,14 +412,24 @@ offset is 1-based."
 
 ;;; Requests
 
+(defun javacomp--initialization-options ()
+  (let ((options nil))
+    (when javacomp-options-log-level
+      (setq options (plist-put options :logLevel javacomp-options-log-level)))
+    (when (and javacomp-options-log-path
+               (> (length javacomp-options-log-path) 0))
+      (setq options (plist-put options :logPath javacomp-options-log-path)))
+    options))
+
 (defun javacomp-command:initialize ()
   "Send `initialize' request to JavaComp server."
   (let ((callback (lambda (resp)
                     (javacomp-on-response-success resp
                       (javacomp--set-server-initialized (javacomp-current-server) t))))
-        (root-uri (concat "file://" (javacomp-project-root))))
+        (root-uri (concat "file://" (javacomp-project-root)))
+        (options (javacomp--initialization-options)))
     (javacomp-send-request "initialize"
-                           `(:processId ,(emacs-pid) :rootUri ,root-uri)
+                           `(:processId ,(emacs-pid) :rootUri ,root-uri :initializationOptions ,options)
                            callback)))
 
 (defun javacomp-command:shutdown ()
@@ -441,7 +469,7 @@ offset is 1-based."
     " m" ;; Method
     " ƒ" ;; Function
     " c" ;; Constructor
-    " v" ;; Field
+    " f" ;; Field
     " v" ;; Variable
     " C" ;; Class
     " I" ;; Interface
