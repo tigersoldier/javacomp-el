@@ -332,20 +332,20 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
 The position of the cursor is specified by POS.  If POS is nil, use the current
 cursor position.
 
-Line number is 1-based."
+Line number is 0-based."
   (let ((p (or pos (point))))
-    (if (= (point-min) 1)
-        (line-number-at-pos p)
+    (if (= (point-min) 0)
+        (1- (line-number-at-pos p))
       (save-excursion
         (save-restriction
           (widen)
-          (line-number-at-pos p))))))
+          (1- (line-number-at-pos p) ))))))
 
 (defun javacomp--character-offset-in-line ()
   "Number of characters present from the begining of line to cursor in current line.
 
-offset is 1-based."
-  (1+ (- (point) (line-beginning-position))))
+offset is 0-based."
+  (- (point) (line-beginning-position)))
 
 (defun javacomp--buffer-current-position ()
   "Get a Position message for the cursor position in the current buffer."
