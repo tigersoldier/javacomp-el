@@ -470,8 +470,8 @@ Return an alist of (line-number . line-text)."
 
 (defvar javacomp-references-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "n") #'javacomp-find-next-reference)
-    (define-key map (kbd "p") #'javacomp-find-previous-reference)
+    (define-key map (kbd "n") #'javacomp-find-next-location)
+    (define-key map (kbd "p") #'javacomp-find-previous-location)
     (define-key map (kbd "C-m") #'javacomp-goto-location)
     (define-key map [mouse-1] #'javacomp-goto-location)
     (define-key map (kbd "q") #'quit-window)
@@ -483,7 +483,7 @@ Return an alist of (line-number . line-text)."
 \\{javacomp-references-mode-map}"
   (use-local-map javacomp-references-mode-map)
   (setq buffer-read-only t)
-  (setq next-error-function #'javacomp-next-reference-function))
+  (setq next-error-function #'javacomp-next-location-function))
 
 (defun javacomp--list-locations (locations)
   (display-buffer (javacomp--locations-buffer locations)))
@@ -526,8 +526,8 @@ Return an alist of (line-number . line-text)."
       (current-buffer))))
 
 (defun javacomp-annotate-line (location line-text)
-  (let ((start (1- (javacomp-plist-get location :range :start :character)))
-        (end (1- (javacomp-plist-get location :range :end :character)))
+  (let ((start (javacomp-plist-get location :range :start :character))
+        (end (javacomp-plist-get location :range :end :character))
         (len (length line-text)))
     (put-text-property start end 'face 'javacomp-match line-text)
     (put-text-property 0 len 'mouse-face 'highlight line-text)
@@ -568,6 +568,19 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
                        '((display-buffer-reuse-window display-buffer-same-window)))
       (pop-to-buffer (find-file-noselect file)))
     (javacomp--move-to-position (plist-get (plist-get location :range) :start))))
+
+(defun javacomp-next-location-function (n &optional reset)
+  "Override for `next-error-function' for use in javacomp-reference-mode buffers."
+  (interactive "p")
+
+  (-when-let (buffer (get-buffer "*javacomp-references*"))
+    (with-current-buffer buffer
+      (when reset
+        (goto-char (point-min)))
+      (if (> n 0)
+          (javacomp-find-next-location (point) n)
+        (javacomp-find-previous-location (point) (- n)))
+      (javacomp-goto-location))))
 
 (defun javacomp-find-next-location (pos arg)
   "Move to next location."
