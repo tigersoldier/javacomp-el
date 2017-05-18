@@ -1,6 +1,7 @@
 ;;; javacomp.el --- Java completion engine client -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2017 Caibin Chen.
+;; Copyright (C) 2015-2016 tide.el authors.
 
 ;; Author: Caibin Chen <tigersoldi@gmail.com>
 ;; URL: http://github.com/tigersoldier/javacomp-el
@@ -84,9 +85,6 @@ If it's empty, the server doesn't write any logs to file."
      (make-variable-buffer-local ',name)
      (put ',name 'permanent-local t)))
 
-(defvar javacomp-completion-detailed nil
-  "Completion dropdown will contain detailed method information if set to non-nil.")
-
 (defvar javacomp-request-counter 0)
 (defvar javacomp--server-id 0)
 
@@ -102,6 +100,20 @@ If it's empty, the server doesn't write any logs to file."
 (defvar javacomp-response-callbacks (make-hash-table :test 'equal))
 (defvar javacomp-notification-listeners (make-hash-table :test 'equal))
 
+(defface javacomp-file
+  '((t (:inherit dired-header)))
+  "Face for file names in references output."
+  :group 'javacomp)
+
+(defface javacomp-line-number
+  '((t (:inherit compilation-line-number)))
+  "Face for line numbers in references output."
+  :group 'javacomp)
+
+(defface javacomp-match
+  '((t (:inherit match)))
+  "Face for matched symbol in references output."
+  :group 'javacomp)
 
 (defun javacomp-project-root ()
   "Determine project root."
@@ -306,6 +318,15 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
   "Mark buffer as dirty."
   (setq javacomp-buffer-dirty t))
 
+(defun javacomp--uri-to-filename (uri)
+  "Return the file name from URI."
+  (cond ((string-prefix-p "/" uri)
+         uri)
+        ((string-prefix-p "file://" uri)
+         (substring uri (length "file://")))
+        (t
+         (error "Unknown URI scheme: %s" uri))))
+
 (defun javacomp--buffer-uri ()
   "Return the URI for the current buffer."
   (and buffer-file-name (concat "file://" buffer-file-name)))
@@ -325,6 +346,11 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
   (save-restriction
     (widen)
     (buffer-substring-no-properties (point-min) (point-max))))
+
+(defun javacomp--text-document-position ()
+  "Get the TextDocumentPositionParams message from current buffer and point."
+  (list :textDocument (javacomp--buffer-identifier)
+        :position (javacomp--buffer-current-position)))
 
 (defun javacomp--line-number-at-pos (&optional pos)
   "The line number where the cursor is at.
@@ -410,6 +436,166 @@ offset is 0-based."
   "Determine whether textDocument/didOpen notification is sent to the current server."
   (eq javacomp--buffer-server-id (javacomp--current-server-id)))
 
+(defun javacomp--lines-text (filename line-numbers)
+  "Get the content of FILENAME at the lines of LINE-NUMBERS.
+
+Return an alist of (line-number . line-text)."
+  (when line-numbers
+      (with-temp-buffer
+        (insert-file-contents filename)
+        (mapcar (lambda (line-number)
+                  (let (start-point
+                        end-point)
+                    (goto-char (point-min))
+                    (forward-line line-number)
+                    (setq start-point (point))
+                    (move-end-of-line nil)
+                    (setq end-point (point))
+                    (cons line-number (buffer-substring start-point end-point))))
+                line-numbers))))
+
+(defun javacomp--line-text (filename line-number)
+  "Get the content of FILENAME at the line of LINE-NUMBER."
+  (cdar (javacomp--lines-text filename (list line-number))))
+
+(defun javacomp-plist-get (list &rest args)
+  (cl-reduce
+   (lambda (object key)
+     (when object
+       (plist-get object key)))
+   args
+   :initial-value list))
+
+;;; Jumping
+
+(defvar javacomp-references-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "n") #'javacomp-find-next-reference)
+    (define-key map (kbd "p") #'javacomp-find-previous-reference)
+    (define-key map (kbd "C-m") #'javacomp-goto-location)
+    (define-key map [mouse-1] #'javacomp-goto-location)
+    (define-key map (kbd "q") #'quit-window)
+    map))
+
+(define-derived-mode javacomp-references-mode nil "javacomp-references"
+  "Major mode for javacomp references list.
+
+\\{javacomp-references-mode-map}"
+  (use-local-map javacomp-references-mode-map)
+  (setq buffer-read-only t)
+  (setq next-error-function #'javacomp-next-reference-function))
+
+(defun javacomp--list-locations (locations)
+  (display-buffer (javacomp--locations-buffer locations)))
+
+(defun javacomp--locations-buffer (locations)
+  "Create a buffer with the given LOCATIONS."
+  (let ((buffer (get-buffer-create "*javacomp-references*"))
+        (inhibit-read-only t)
+        (width tab-width)
+        (project-root (javacomp-project-root))
+        (last-file-name nil))
+    (with-current-buffer buffer
+      (erase-buffer)
+      (javacomp-references-mode)
+      (setq tab-width width)
+      (while locations
+        (let* ((location (car locations))
+               (full-file-name (javacomp--uri-to-filename (plist-get location :uri)))
+               (file-name (file-relative-name full-file-name project-root))
+               (line-number (javacomp-plist-get location :range :start :line))
+               (line-text (javacomp--line-text full-file-name line-number)))
+
+          ;; file
+          (when (not (equal last-file-name file-name))
+            (setq last-file-name file-name)
+            (insert (propertize file-name 'face 'javacomp-file))
+            (insert "\n"))
+
+          ;; line number
+          (insert (propertize (format "%5d" line-number) 'face 'javacomp-line-number))
+          (insert ":")
+
+          ;; line text
+          (javacomp-annotate-line location line-text)
+          (insert line-text)
+
+          (insert "\n"))
+        (pop locations))
+      (goto-char (point-min))
+      (current-buffer))))
+
+(defun javacomp-annotate-line (location line-text)
+  (let ((start (1- (javacomp-plist-get location :range :start :character)))
+        (end (1- (javacomp-plist-get location :range :end :character)))
+        (len (length line-text)))
+    (put-text-property start end 'face 'javacomp-match line-text)
+    (put-text-property 0 len 'mouse-face 'highlight line-text)
+    (put-text-property 0 len 'help-echo "mouse-1: Visit the location." line-text)
+    (put-text-property 0 len 'javacomp-location location line-text)))
+
+(defun javacomp--move-to-position (position)
+  "Move point to POSITION in the current buffer.
+
+POSITION is the JSON Position message defined by Language Server Protocol."
+  (let* ((line (plist-get position :line))
+         (character (plist-get position :character)))
+    (save-restriction
+      (widen)
+      (goto-char (point-min))
+      (forward-line line))
+    (forward-char character)
+    (recenter)))
+
+(defun javacomp--position-to-point (position)
+  "Convert POSITION to point of the buffer.
+
+POSITION is the JSON Position message defined by Language Server Protocol."
+  (save-excursion
+    (javacomp--move-to-position position)
+    (point)))
+
+(defun javacomp--jump-to-location (location &optional reuse-window no-marker)
+  "Jump to the file and point specified by LOCATION.
+
+LOCATION is the JSON Location message defined by Language Server Protocol."
+  (let* ((uri (plist-get location :uri))
+         (file (javacomp--uri-to-filename uri)))
+    (unless no-marker
+      (ring-insert find-tag-marker-ring (point-marker)))
+    (if reuse-window
+        (pop-to-buffer (find-file-noselect file)
+                       '((display-buffer-reuse-window display-buffer-same-window)))
+      (pop-to-buffer (find-file-noselect file)))
+    (javacomp--move-to-position (plist-get (plist-get location :range) :start))))
+
+(defun javacomp-find-next-location (pos arg)
+  "Move to next location."
+  (interactive "d\np")
+  (setq arg (* 2 arg))
+  (unless (get-text-property pos 'javacomp-location)
+    (setq arg (1- arg)))
+  (dotimes (_i arg)
+    (setq pos (next-single-property-change pos 'javacomp-location))
+    (unless pos
+      (error "Moved past last location")))
+  (goto-char pos))
+
+(defun javacomp-find-previous-location (pos arg)
+  "Move back to previous location."
+  (interactive "d\np")
+  (dotimes (_i (* 2 arg))
+    (setq pos (previous-single-property-change pos 'javacomp-location))
+    (unless pos
+      (error "Moved back before first location")))
+  (goto-char pos))
+
+(defun javacomp-goto-location ()
+  "Jump to reference location in the file."
+  (interactive)
+  (-when-let (location (get-text-property (point) 'javacomp-location))
+    (javacomp--jump-to-location location nil t)))
+
 ;;; Requests
 
 (defun javacomp--initialization-options ()
@@ -466,33 +652,35 @@ offset is 0-based."
   ;; https://github.com/Microsoft/language-server-protocol/blob/master/protocol.md#textDocument_completion
   '(nil
     nil ;; Text
-    " m" ;; Method
-    " ƒ" ;; Function
-    " c" ;; Constructor
-    " f" ;; Field
-    " v" ;; Variable
-    " C" ;; Class
-    " I" ;; Interface
-    " M" ;; Module
-    " p" ;; Property
-    " u" ;; Unit
-    " v" ;; Value
-    " E" ;; Enum
-    " k" ;; Keyword
-    " s" ;; Snippet
-    " c" ;; Color
-    " f" ;; File
-    " r" ;; Reference
+    " method" ;; Method
+    " function" ;; Function
+    " constructor" ;; Constructor
+    " field" ;; Field
+    " variable" ;; Variable
+    " class" ;; Class
+    " interface" ;; Interface
+    " package" ;; Module
+    " property" ;; Property
+    " unit" ;; Unit
+    " value" ;; Value
+    " enum" ;; Enum
+    " keyword" ;; Keyword
+    " snippet" ;; Snippet
+    " color" ;; Color
+    " file" ;; File
+    " reference" ;; Reference
     )
   "A list mapping CompletionItemKind enum values to completion annotation strings.")
 
 (defun javacomp-completion-annotation (name)
   "Return a short string of the type of the completion item NAME."
-  (if javacomp-completion-detailed
-      ;; Get everything before the first newline, if any, because company-mode
-      ;; wants single-line annotations.
-      (car (split-string (javacomp-completion-meta name) "\n"))
-    (let ((item-kind (plist-get (get-text-property 0 'completion-item name) :kind)))
+  (let* ((item (get-text-property 0 'completion-item name))
+         (item-detail (plist-get item :detail))
+         (item-kind (plist-get item :kind)))
+    (if item-detail
+        ;; Get everything before the first newline, if any, because company-mode
+        ;; wants single-line annotations.
+        (concat " " (car (split-string item-detail "\n")))
       (nth item-kind javacomp--completion-kinds-annotation))))
 
 (defun javacomp-completion-prefix ()
@@ -512,15 +700,14 @@ offset is 0-based."
     (plist-get completion-list :items))))
 
 (defun javacomp-command:completion-text-document (prefix cb)
-  (let* ((text-document-position
-          `(:textDocument ,(javacomp--buffer-identifier) :position ,(javacomp--buffer-current-position))))
+  (let ((text-document-position (javacomp--text-document-position)))
     (javacomp-send-request "textDocument/completion"
-                         text-document-position
-                         (lambda (response)
-                           (funcall
-                            cb
-                            (when (javacomp-response-success-p response)
-                              (javacomp-annotate-completions (plist-get response :result) prefix text-document-position)))))))
+                           text-document-position
+                           (lambda (response)
+                             (funcall
+                              cb
+                              (when (javacomp-response-success-p response)
+                                (javacomp-annotate-completions (plist-get response :result) prefix text-document-position)))))))
 
 ;;;###autoload
 (defun company-javacomp (command &optional arg &rest ignored)
@@ -605,6 +792,28 @@ offset is 0-based."
     (delete-process server))
   (javacomp-start-server)
   (javacomp-each-buffer (javacomp-project-root) #'javacomp-configure-buffer))
+
+(defun javacomp-jump-to-definition ()
+  "Jump to the definition of the symbol at point.
+
+If more than one definition is returned, list all definitions in a separate buffer."
+  (interactive)
+  (let ((cb (lambda (response)
+              (javacomp-on-response-success response
+                (let* ((result (plist-get response :result))
+                       ;; result can be either a single Location, or an array of Locations.
+                       (locations (if (plist-get result :uri)
+                                      (list result)
+                                    result))
+                       (len (length locations)))
+                  (message "definition len: %s, def: %s" len locations)
+                  (cond ((eq len 0)
+                         (message "No definition found"))
+                        ((eq len 1)
+                         (javacomp--jump-to-location (car locations)))
+                        (t
+                         (javacomp--list-locations locations))))))))
+    (javacomp-send-request "textDocument/definition" (javacomp--text-document-position) cb)))
 
 ;;;###autoload
 (define-minor-mode javacomp-mode
