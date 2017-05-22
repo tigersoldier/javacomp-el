@@ -78,6 +78,11 @@ If it's empty, the server doesn't write any logs to file."
                  (const "finest"))
   :group 'javacomp)
 
+(defcustom javacomp-options-ignore-paths nil
+  "Server option for a list of relative paths to be ignored."
+  :type '(set string)
+  :group 'javacomp)
+
 (defmacro javacomp-def-permanent-buffer-local (name &optional init-value)
   "Declare NAME as buffer local variable with initial value INIT-VALUE."
   `(progn
@@ -618,6 +623,8 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
     (when (and javacomp-options-log-path
                (> (length javacomp-options-log-path) 0))
       (setq options (plist-put options :logPath javacomp-options-log-path)))
+    (when javacomp-options-ignore-paths
+      (setq options (plist-put options :ignorePaths javacomp-options-ignore-paths)))
     options))
 
 (defun javacomp-command:initialize ()
