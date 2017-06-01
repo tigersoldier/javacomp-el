@@ -89,6 +89,24 @@ If it's empty, the server doesn't write any logs to file."
   :type '(set string)
   :group 'javacomp)
 
+(defcustom javacomp-log-request-response nil
+  "Whether or not to log the requests to and responses from JavaComp server.
+
+If it's non-nil, requests and responses are logged to a buffer named *javacomp-debug*.
+Note that `javacomp-log-debug-message' doesn't affect whether the requests and responses
+are logged.
+
+This option is for debugging purposes."
+  :type 'boolean
+  :group 'javacomp)
+
+(defcustom javacomp-log-debug-message nil
+  "Whether or not to log messages for debugging.
+
+If it's non-nil, requests and responses are logged to a buffer named *javacomp-debug*."
+  :type 'boolean
+  :group 'javacomp)
+
 (defmacro javacomp-def-permanent-buffer-local (name &optional init-value)
   "Declare NAME as buffer local variable with initial value INIT-VALUE."
   `(progn
@@ -139,7 +157,7 @@ If it's empty, the server doesn't write any logs to file."
   "Determine the name of the current project based on the PROJECT-ROOT.
 
 If PROJECT-ROOT is not specified, use the project root returned from `javacomp-project-root'."
-  (message "project-root: %s" project-root)
+  (javacomp--log-debug "project-root: %s" project-root)
   (file-name-nondirectory
    (directory-file-name (or project-root (javacomp-project-root)))))
 
@@ -215,7 +233,8 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
       (apply (cdr listener) (list event)))))
 
 (defun javacomp-dispatch (response)
-  (message "Got response %s" response)
+  (when javacomp-log-request-response
+    (javacomp--log-debug-no-check "=========== response =============\n%s" response))
   (if (plist-get response :id)
       (javacomp-dispatch-response response)
     (javacomp-dispatch-notification response)))
@@ -248,7 +267,7 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
                    "Content-Type: application/javacomp-el;charset=utf8\r\n"
                    "\r\n"
                    content)))
-    ;; (message "(%s) sending message:\n%s" (javacomp-project-name) message)
+    (javacomp--log-debug-no-check "~~~~~~~~~~~~~ request ~~~~~~~~~~~~~\n%s" message)
     (process-send-string (javacomp-current-server) message)))
 
 (defun javacomp-send-request-sync (name args)
@@ -424,7 +443,7 @@ offset is 0-based."
   `(if (javacomp-response-success-p ,response)
        ,@body
      (-when-let (err (plist-get response :error))
-       (message "(JavaComp) response error: %s" err))
+       (javacomp--log-debug "response error: %s" err))
      nil))
 
 (defmacro javacomp-on-response-success-callback (response &rest body)
@@ -480,6 +499,28 @@ Return an alist of (line-number . line-text)."
        (plist-get object key)))
    args
    :initial-value list))
+
+(defun javacomp--log-debug (format-string &rest args)
+  "Append message to *javacomp-debug* buffer if `javacomp-log-debug-message' is non-nil.
+
+FORMAT_STRING is a template for formatting ARGS. See `format-message' for more information.
+"
+  (when javacomp-log-debug-message
+    (apply #'javacomp--log-debug-no-check format-string args)))
+
+(defun javacomp--log-debug-no-check (format-string &rest args)
+  "Append message to *javacomp-debug* buffer without checking the value of `javacomp-log-debug-message'.
+
+FORMAT_STRING is a template for formatting ARGS. See `format-message' for more information.
+"
+  (with-current-buffer (get-buffer-create "*javacomp-debug*")
+    (save-excursion
+      (save-restriction
+        (widen)
+        (goto-char (point-max))
+        (let ((str (apply #'format-message format-string args)))
+          (insert (substring str 0 (min (length str) 512))
+                  "\n\n"))))))
 
 ;;; Jumping
 
@@ -711,7 +752,7 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
 (defun javacomp-signature-text (response)
   "Extract text from SignatureHelp response."
   (let ((signatures (javacomp-plist-get response :result :signatures)))
-    (message "signature %s %s" response signatures)
+    (javacomp--log-debug "signature %s %s" response signatures)
     (when signatures
       ; TODO: format the signature based on parameters.
       (plist-get (car signatures) :label))))
@@ -863,7 +904,7 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
           (javacomp-command:shutdown)
           (javacomp-notification:exit))
       (error
-       (message (error-message-string err))))
+       (javacomp--log-debug (error-message-string err))))
     (javacomp-cleanup-project (javacomp-project-root))))
 
 (defun javacomp-restart-server ()
@@ -887,7 +928,7 @@ If more than one definition is returned, list all definitions in a separate buff
                                       (list result)
                                     result))
                        (len (length locations)))
-                  (message "definition len: %s, def: %s" len locations)
+                  (javacomp--log-debug "definition len: %s, def: %s" len locations)
                   (cond ((eq len 0)
                          (message "No definition found"))
                         ((eq len 1)
