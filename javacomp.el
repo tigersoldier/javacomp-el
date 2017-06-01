@@ -429,6 +429,12 @@ offset is 0-based."
        (message "(JavaComp) response error: %s" err))
      nil))
 
+(defmacro javacomp-on-response-success-callback (response &rest body)
+  (declare (indent 1))
+  `(lambda (,response)
+     (javacomp-on-response-success ,response
+       ,@body)))
+
 (defun javacomp--server-get (propname)
   "Return the value of current server's PROPNAME property."
   (-when-let (server (javacomp-current-server))
@@ -671,6 +677,59 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
   "Send `exit' notification to JavaComp server."
   (javacomp-send-notification "exit" nil))
 
+;;; eldoc
+
+(defun javacomp-method-call-p ()
+  (or (looking-at "[(,]") (and (not (looking-at "\\sw")) (looking-back "[(,]\n?\\s-*"))))
+
+(defun javacomp-eldoc-maybe-show (text)
+  (with-demoted-errors "eldoc error: %s"
+    (and (or (eldoc-display-message-p)
+             ;; Erase the last message if we won't display a new one.
+             (when eldoc-last-message
+               (eldoc-message nil)
+               nil))
+         (eldoc-message text))))
+
+(defun javacomp-hover-text (response)
+  "Extract text from Hover response."
+  (let* ((content (javacomp-plist-get response :result :contents))
+         ; content can be a single MarkedString or a list. Normalize single MarkedString to
+         ; a list
+         (contents (if (or (stringp content) (plist-get response :value))
+                       (list content)
+                     content)))
+    (when content
+      (mapconcat #'javacomp-marked-string-to-text contents "\n"))))
+
+(defun javacomp-marked-string-to-text (marked)
+  "Convert a MarkedString MARKED to a string."
+  (if (stringp marked)
+      ; TODO: convert markdown string to formatted string.
+      marked
+    ; TODO: format language string by language
+    (plist-get marked :value)))
+
+(defun javacomp-signature-text (response)
+  "Extract text from SignatureHelp response."
+  (let ((signatures (javacomp-plist-get response :result :signatures)))
+    (message "signature %s %s" response signatures)
+    (when signatures
+      ; TODO: format the signature based on parameters.
+      (plist-get (car signatures) :label))))
+
+(defun javacomp-eldoc-function ()
+  (when (not (member last-command '(next-error previous-error)))
+    (if (javacomp-method-call-p)
+        (javacomp-send-request "textDocument/signatureHelp" (javacomp--text-document-position)
+                               (javacomp-on-response-success-callback response
+                                 (javacomp-eldoc-maybe-show (javacomp-signature-text response))))
+      (when (looking-at "\\s_\\|\\sw")
+        (javacomp-send-request "textDocument/hover" (javacomp--text-document-position)
+                               (javacomp-on-response-success-callback response
+                                 (javacomp-eldoc-maybe-show (javacomp-hover-text response)))))))
+  nil)
+
 ;;; Auto completion
 
 (defconst javacomp--completion-kinds-annotation
@@ -772,8 +831,8 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
   "Setup `javacomp-mode' in current buffer."
   (javacomp-start-server-if-required)
   (javacomp-configure-buffer)
-  ;; (set (make-local-variable 'eldoc-documentation-function)
-  ;;      'javacomp-eldoc-function)
+  (set (make-local-variable 'eldoc-documentation-function)
+       'javacomp-eldoc-function)
   ;; (set (make-local-variable 'imenu-auto-rescan) t)
   ;; (set (make-local-variable 'imenu-create-index-function)
   ;;      'javacomp-imenu-index)
@@ -792,8 +851,6 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
   (remove-hook 'kill-buffer-hook 'javacomp-cleanup-buffer)
   (remove-hook 'hack-local-variables-hook 'javacomp-configure-buffer)
   (javacomp-cleanup-buffer)
-  ;; (set (make-local-variable 'eldoc-documentation-function)
-  ;;      'javacomp-eldoc-function)
   ;; (set (make-local-variable 'imenu-auto-rescan) t)
   ;; (set (make-local-variable 'imenu-create-index-function)
   ;;      'javacomp-imenu-index)
