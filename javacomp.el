@@ -7,7 +7,7 @@
 ;; URL: http://github.com/tigersoldier/javacomp-el
 ;; Version: 0.0.1
 ;; Keywords: java
-;; Package-Requires: ((dash "2.10.0") (flycheck "27") (cl-lib "0.5"))
+;; Package-Requires: ((dash "2.10.0") (flycheck "27") (cl-lib "0.5") (projectile "0.14.0"))
 
 ;; This program is free software: you can redistribute it and/or modify it
 ;; under the terms of the GNU General Public License as published by
@@ -35,6 +35,7 @@
 (require 'dash)
 (require 'flycheck)
 (require 'imenu)
+(require 'projectile)
 (require 'thingatpt)
 
 (defgroup javacomp nil
@@ -129,10 +130,7 @@ If it's empty, the server doesn't write any logs to file."
   "Determine project root."
   (or
    javacomp-project-root
-   (let ((root (or (locate-dominating-file default-directory "WORKSPACE"))))
-     (unless root
-       (message "Couldn't locate project root directory. Assuming '%s' is the root directory." default-directory)
-       (setq root default-directory))
+   (let ((root (or (projectile-project-root))))
      (let ((full-path (expand-file-name root)))
        (setq javacomp-project-root full-path)
        full-path))))
