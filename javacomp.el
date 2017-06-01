@@ -60,6 +60,11 @@ paths are resolved against the project root directory."
   :type '(choice (const nil) string)
   :group 'javacomp)
 
+(defcustom javacomp-java-options nil
+  "List of command line options to be pased to java command"
+  :type '(set string)
+  :group 'javacomp)
+
 (defcustom javacomp-options-log-path ""
   "Server option for the path of the log file.
 
@@ -277,8 +282,9 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
                           (expand-file-name javacomp-server-jar)))
          ; Use pipe for process connection, because pty might transform \r to \n.
          (process-connection-type nil)
+         (commands `(,javacomp-java-executable ,@javacomp-java-options "-jar" ,jar))
          (process
-          (start-file-process "javacomp" buf javacomp-java-executable "-jar" jar)))
+          (apply #'start-file-process "javacomp" buf commands)))
     (set-process-coding-system process 'utf-8-unix 'utf-8-unix)
     (set-process-filter process #'javacomp-net-filter)
     (set-process-sentinel process #'javacomp-net-sentinel)
