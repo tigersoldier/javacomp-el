@@ -148,10 +148,11 @@ If it's non-nil, requests and responses are logged to a buffer named *javacomp-d
   "Determine project root."
   (or
    javacomp-project-root
-   (let ((root (or (projectile-project-root))))
-     (let ((full-path (expand-file-name root)))
-       (setq javacomp-project-root full-path)
-       full-path))))
+   (let* ((projectile-require-project-root nil)
+          (root (or (projectile-project-root)))
+          (full-path (expand-file-name root)))
+     (setq javacomp-project-root full-path)
+     full-path)))
 
 (defun javacomp-project-name (&optional project-root)
   "Determine the name of the current project based on the PROJECT-ROOT.
