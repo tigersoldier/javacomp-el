@@ -89,6 +89,11 @@ If it's empty, the server doesn't write any logs to file."
   :type '(set string)
   :group 'javacomp)
 
+(defcustom javacomp-options-type-index-files nil
+  "Server option for a list of type index files."
+  :type '(set string)
+  :group 'javacomp)
+
 (defcustom javacomp-log-request-response nil
   "Whether or not to log the requests to and responses from JavaComp server.
 
@@ -677,6 +682,8 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
       (setq options (plist-put options :logPath javacomp-options-log-path)))
     (when javacomp-options-ignore-paths
       (setq options (plist-put options :ignorePaths javacomp-options-ignore-paths)))
+    (when javacomp-options-type-index-files
+      (setq options (plist-put options :typeIndexFiles javacomp-options-type-index-files)))
     options))
 
 (defun javacomp-command:initialize ()
