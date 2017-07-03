@@ -817,7 +817,12 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
 
 (defun javacomp-completion-prefix ()
   ; TODO: Use server provided triggers.
-  (company-grab-symbol-cons "\\." 1))
+  (let ((symbol-cons (company-grab-symbol-cons "\\." 1)))
+    (if (and (stringp symbol-cons) (string-prefix-p "@" symbol-cons))
+        ;; @ is part of the symbol. Remove it from the prefix and always
+        ;; show completion for annotations.
+        (cons (substring symbol-cons 1) t)
+      symbol-cons)))
 
 (defun javacomp-annotate-completions (completion-list prefix text-document-position)
   (-map
