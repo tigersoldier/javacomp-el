@@ -528,6 +528,23 @@ FORMAT_STRING is a template for formatting ARGS. See `format-message' for more i
           (insert (substring str 0 (min (length str) 512))
                   "\n\n"))))))
 
+(defun javacomp--safe-fontify-string (java-snippet)
+  "Syntax highlight JAVA-SNIPPET.
+
+If JAVA-SNIPPET is a string, return a syntax highlighted string
+with the same content of JAVA-SNIPPET. Otherwise return
+JAVA-SNIPPET itself. In either case, JAVA-SNIPPET is unchanged.
+"
+  (if (stringp java-snippet)
+    (with-temp-buffer
+      (let ((java-mode-hook nil)
+            (inhibit-message t))
+        (insert java-snippet)
+        (java-mode)
+        (font-lock-fontify-buffer)
+        (buffer-string)))
+    java-snippet))
+
 ;;; Jumping
 
 (defvar javacomp-references-mode-map
@@ -768,13 +785,19 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
 (defun javacomp-eldoc-function ()
   (when (not (member last-command '(next-error previous-error)))
     (if (javacomp-method-call-p)
-        (javacomp-send-request "textDocument/signatureHelp" (javacomp--text-document-position)
-                               (javacomp-on-response-success-callback response
-                                 (javacomp-eldoc-maybe-show (javacomp-signature-text response))))
+        (javacomp-send-request
+         "textDocument/signatureHelp"
+         (javacomp--text-document-position)
+         (javacomp-on-response-success-callback response
+           (javacomp-eldoc-maybe-show (javacomp--safe-fontify-string
+                                       (javacomp-signature-text response)))))
       (when (looking-at "\\s_\\|\\sw")
-        (javacomp-send-request "textDocument/hover" (javacomp--text-document-position)
-                               (javacomp-on-response-success-callback response
-                                 (javacomp-eldoc-maybe-show (javacomp-hover-text response)))))))
+        (javacomp-send-request
+         "textDocument/hover"
+         (javacomp--text-document-position)
+         (javacomp-on-response-success-callback response
+           (javacomp-eldoc-maybe-show (javacomp--safe-fontify-string
+                                       (javacomp-hover-text response))))))))
   nil)
 
 ;;; Auto completion
