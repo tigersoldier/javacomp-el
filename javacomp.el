@@ -565,7 +565,7 @@ JAVA-SNIPPET itself. In either case, JAVA-SNIPPET is unchanged.
   (setq next-error-function #'javacomp-next-location-function))
 
 (defun javacomp--list-locations (locations)
-  (display-buffer (javacomp--locations-buffer locations)))
+  (pop-to-buffer (javacomp--locations-buffer locations)))
 
 (defun javacomp--locations-buffer (locations)
   "Create a buffer with the given LOCATIONS."
