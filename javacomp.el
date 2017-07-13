@@ -538,6 +538,8 @@ JAVA-SNIPPET itself. In either case, JAVA-SNIPPET is unchanged.
   (if (stringp java-snippet)
     (with-temp-buffer
       (let ((java-mode-hook nil)
+            (c-mode-common-hook nil)
+            (prog-mode-hook)
             (inhibit-message t))
         (insert java-snippet)
         (java-mode)
