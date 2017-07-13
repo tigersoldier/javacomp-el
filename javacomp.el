@@ -968,7 +968,7 @@ If more than one definition is returned, list all definitions in a separate buff
                   (cond ((eq len 0)
                          (message "No definition found"))
                         ((eq len 1)
-                         (javacomp--jump-to-location (car locations)))
+                         (javacomp--jump-to-location (car locations) t))
                         (t
                          (javacomp--list-locations locations))))))))
     (javacomp-send-request "textDocument/definition" (javacomp--text-document-position) cb)))
