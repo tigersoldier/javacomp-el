@@ -591,27 +591,31 @@ JAVA-SNIPPET itself. In either case, JAVA-SNIPPET is unchanged.
             (insert (propertize file-name 'face 'javacomp-file))
             (insert "\n"))
 
-          ;; line number
-          (insert (propertize (format "%5d" line-number) 'face 'javacomp-line-number))
-          (insert ":")
+          (insert
+           (javacomp-concat-and-annotate-line location
+                                              (concat
+                                               ;; line number
+                                               (propertize (format "%5d" line-number) 'face 'javacomp-line-number)
+                                               ":")
+                                               ;; line text
+                                              line-text))
 
-          ;; line text
-          (javacomp-annotate-line location line-text)
-          (insert line-text)
 
           (insert "\n"))
         (pop locations))
       (goto-char (point-min))
       (current-buffer))))
 
-(defun javacomp-annotate-line (location line-text)
+(defun javacomp-concat-and-annotate-line (location line-prefix line-text)
   (let ((start (javacomp-plist-get location :range :start :character))
-        (end (javacomp-plist-get location :range :end :character))
-        (len (length line-text)))
-    (put-text-property start end 'face 'javacomp-match line-text)
-    (put-text-property 0 len 'mouse-face 'highlight line-text)
-    (put-text-property 0 len 'help-echo "mouse-1: Visit the location." line-text)
-    (put-text-property 0 len 'javacomp-location location line-text)))
+        (end (javacomp-plist-get location :range :end :character)))
+    (put-text-property start end 'face 'javacomp-match line-text))
+  (let* ((line (concat line-prefix line-text))
+         (len (length line)))
+    (put-text-property 0 len 'mouse-face 'highlight line)
+    (put-text-property 0 len 'help-echo "mouse-1: Visit the location." line)
+    (put-text-property 0 len 'javacomp-location location line)
+    line))
 
 (defun javacomp--move-to-position (position)
   "Move point to POSITION in the current buffer.
