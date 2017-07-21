@@ -62,7 +62,7 @@ paths are resolved against the project root directory."
   :group 'javacomp)
 
 (defcustom javacomp-java-options nil
-  "List of command line options to be pased to java command"
+  "List of command line options to be pased to java command."
   :type '(set string)
   :group 'javacomp)
 
@@ -97,9 +97,9 @@ If it's empty, the server doesn't write any logs to file."
 (defcustom javacomp-log-request-response nil
   "Whether or not to log the requests to and responses from JavaComp server.
 
-If it's non-nil, requests and responses are logged to a buffer named *javacomp-debug*.
-Note that `javacomp-log-debug-message' doesn't affect whether the requests and responses
-are logged.
+If it's non-nil, requests and responses are logged to a buffer
+named *javacomp-debug*. Note that `javacomp-log-debug-message'
+doesn't affect whether the requests and responses are logged.
 
 This option is for debugging purposes."
   :type 'boolean
@@ -181,6 +181,7 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
     (javacomp-cleanup-project project-root)))
 
 (defun javacomp-cleanup-buffer-callbacks ()
+  "Remove all callbacks for the current buffer."
   (let ((error-response `(:errors "Cleaning up buffer callbacks")))
     (maphash
      (lambda (id callback)
@@ -199,17 +200,20 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
   )
 
 (defun javacomp-decode-response-legth ()
+  "Return response length in bytes from the Content-Length header."
   (goto-char (point-min))
   (when (re-search-forward "Content-Length: \\([0-9]+\\)" nil t)
     (string-to-number (match-string 1))))
 
 (defun javacomp-enough-response-p (length)
+  "Determine whether the received response has length no less than LENGTH."
   (save-excursion
     (when (search-forward "{" nil t)
       (backward-char 1)
       (>= (- (position-bytes (point-max)) (position-bytes (point))) (1- length)))))
 
 (defun javacomp-decode-response (process)
+  "Decode a response returned from PROCESS."
   (with-current-buffer (process-buffer process)
     (let ((length (javacomp-decode-response-legth))
           (json-object-type 'plist)
@@ -226,6 +230,7 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
           (javacomp-decode-response process))))))
 
 (defun javacomp-dispatch-response (response)
+  "Dispatch RESPONSE of a command to its callback function."
   (let* ((request-id (plist-get response :id))
          (callback (gethash request-id javacomp-response-callbacks)))
     (when callback
@@ -239,6 +244,11 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
       (apply (cdr listener) (list event)))))
 
 (defun javacomp-dispatch (response)
+  "Dispatch a RESPONSE.
+
+If RESPONSE has a field named 'id', dispatch it using
+`javacomp-dispatch-response', otherwise dispatch it using
+`javacomp-dispatch-notification'."
   (when javacomp-log-request-response
     (javacomp--log-debug-no-check "=========== response =============\n%s" response))
   (if (plist-get response :id)
@@ -265,6 +275,9 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
   (javacomp--send-message `(:method ,name :params ,args)))
 
 (defun javacomp--send-message (json-content)
+  "Encode and send JSON-CONTENT to JavaComp server.
+
+JSON-CONTENT will be encoded to a JSON string."
   (let* ((json-encoding-pretty-print nil)
          (content (json-encode json-content))
          (content-length (number-to-string (string-bytes content)))
@@ -277,6 +290,12 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
     (process-send-string (javacomp-current-server) message)))
 
 (defun javacomp-send-request-sync (name args)
+  "Send a request to JavaComp synchronousely.
+
+NAME is the name of the request. ARGS is the value of the
+'params' field of the request.
+
+The timeout of the request is `javacomp-sync-request-timeout'."
   (let* ((start-time (current-time))
          (response nil))
     (javacomp-send-request name args (lambda (resp) (setq response resp)))
@@ -291,6 +310,7 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
   (gethash (javacomp-project-root) javacomp-servers))
 
 (defun javacomp-next-request-id ()
+  "Return the ID of the next request."
   (number-to-string (cl-incf javacomp-request-counter)))
 
 (defun javacomp-start-server ()
@@ -404,7 +424,7 @@ Line number is 0-based."
 (defun javacomp--character-offset-in-line ()
   "Number of characters present from the begining of line to cursor in current line.
 
-offset is 0-based."
+Offset is 0-based."
   (- (point) (line-beginning-position)))
 
 (defun javacomp--buffer-current-position ()
@@ -453,6 +473,7 @@ offset is 0-based."
      nil))
 
 (defmacro javacomp-on-response-success-callback (response &rest body)
+  "If RESPONSE is a successful response, run BODY."
   (declare (indent 1))
   `(lambda (,response)
      (javacomp-on-response-success ,response
@@ -507,18 +528,23 @@ Return an alist of (line-number . line-text)."
    :initial-value list))
 
 (defun javacomp--log-debug (format-string &rest args)
-  "Append message to *javacomp-debug* buffer if `javacomp-log-debug-message' is non-nil.
+  "Log a debug message.
 
-FORMAT_STRING is a template for formatting ARGS. See `format-message' for more information.
-"
+Append message to *javacomp-debug* buffer if
+`javacomp-log-debug-message' is non-nil.
+
+FORMAT-STRING is a template for formatting ARGS. See
+`format-message' for more information."
   (when javacomp-log-debug-message
     (apply #'javacomp--log-debug-no-check format-string args)))
 
 (defun javacomp--log-debug-no-check (format-string &rest args)
-  "Append message to *javacomp-debug* buffer without checking the value of `javacomp-log-debug-message'.
+  "Log a debug message regardless the value of `javacomp-log-debug-message'.
 
-FORMAT_STRING is a template for formatting ARGS. See `format-message' for more information.
-"
+The debug message is logged to *javacomp-debug* buffer.
+
+FORMAT-STRING is a template for formatting ARGS. See
+`format-message' for more information."
   (with-current-buffer (get-buffer-create "*javacomp-debug*")
     (save-excursion
       (save-restriction
@@ -533,8 +559,7 @@ FORMAT_STRING is a template for formatting ARGS. See `format-message' for more i
 
 If JAVA-SNIPPET is a string, return a syntax highlighted string
 with the same content of JAVA-SNIPPET. Otherwise return
-JAVA-SNIPPET itself. In either case, JAVA-SNIPPET is unchanged.
-"
+JAVA-SNIPPET itself. In either case, JAVA-SNIPPET is unchanged."
   (if (stringp java-snippet)
     (with-temp-buffer
       (let ((java-mode-hook nil)
@@ -567,6 +592,7 @@ JAVA-SNIPPET itself. In either case, JAVA-SNIPPET is unchanged.
   (setq next-error-function #'javacomp-next-location-function))
 
 (defun javacomp--list-locations (locations)
+  "Show a buffer with a list of file locations from LOCATIONS."
   (pop-to-buffer (javacomp--locations-buffer locations)))
 
 (defun javacomp--locations-buffer (locations)
@@ -609,6 +635,10 @@ JAVA-SNIPPET itself. In either case, JAVA-SNIPPET is unchanged.
       (current-buffer))))
 
 (defun javacomp-concat-and-annotate-line (location line-prefix line-text)
+  "Concat LINE-PREFIX and LINE-TEXT and set text properties.
+
+LOCATION is a Location JSON message defined by Language Server
+Protocol."
   (let ((start (javacomp-plist-get location :range :start :character))
         (end (javacomp-plist-get location :range :end :character)))
     (put-text-property start end 'face 'javacomp-match line-text))
@@ -643,7 +673,11 @@ POSITION is the JSON Position message defined by Language Server Protocol."
 (defun javacomp--jump-to-location (location &optional reuse-window no-marker)
   "Jump to the file and point specified by LOCATION.
 
-LOCATION is the JSON Location message defined by Language Server Protocol."
+LOCATION is the JSON Location message defined by Language Server Protocol.
+
+If RESUE-WINDOW is non-nil, show the buffer of the file of the
+location in the current window. Otherwise, show the buffer in a
+new window if possible."
   (let* ((uri (plist-get location :uri))
          (file (javacomp--uri-to-filename uri)))
     (unless no-marker
@@ -697,6 +731,7 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
 ;;; Requests
 
 (defun javacomp--initialization-options ()
+  "Return the options to be sent with the initialize command."
   (let ((options nil))
     (when javacomp-options-log-level
       (setq options (plist-put options :logLevel javacomp-options-log-level)))
@@ -750,7 +785,8 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
 ;;; eldoc
 
 (defun javacomp-method-call-p ()
-  (or (looking-at "[(,]") (and (not (looking-at "\\sw")) (looking-back "[(,]\n?\\s-*"))))
+  "Determine whether the cursor is in a method call."
+  (or (looking-at "[(,]") (and (not (looking-at "\\sw")) (looking-back "[(,]\n?\\s-*" nil))))
 
 (defun javacomp-eldoc-maybe-show (text)
   (with-demoted-errors "eldoc error: %s"
@@ -781,7 +817,7 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
     (plist-get marked :value)))
 
 (defun javacomp-signature-text (response)
-  "Extract text from SignatureHelp response."
+  "Extract text from SignatureHelp RESPONSE."
   (let ((signatures (javacomp-plist-get response :result :signatures)))
     (javacomp--log-debug "signature %s %s" response signatures)
     (when signatures
@@ -845,6 +881,7 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
       (nth item-kind javacomp--completion-kinds-annotation))))
 
 (defun javacomp-completion-prefix ()
+  "Return the completion prefix for the current point for company."
   ; TODO: Use server provided triggers.
   (let ((symbol-cons (company-grab-symbol-cons "\\." 1)))
     (if (and (stringp symbol-cons) (string-prefix-p "@" symbol-cons))
@@ -866,6 +903,10 @@ LOCATION is the JSON Location message defined by Language Server Protocol."
     (plist-get completion-list :items))))
 
 (defun javacomp-command:completion-text-document (prefix cb)
+  "Send textDocument/completion command to JavaComp server.
+
+PREFIX is the prefix provided by company-mode. CB will be called
+on the response from JavaComp server."
   (let ((text-document-position (javacomp--text-document-position)))
     (javacomp-send-request "textDocument/completion"
                            text-document-position
