@@ -174,7 +174,11 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
   (javacomp-decode-response process))
 
 (defun javacomp-net-sentinel (process message)
-  (let ((project-root (process-get process 'project-root)))
+  "Handle signals of the JavaComp process.
+
+PROCESS is the JavaComp process. MESSAGE is the process message.
+See `set-process-sentinel' for the two parameters."
+  (let ((project-root (javacomp--server-project-root process)))
     (message "(%s) JavaComp server exits: %s." (javacomp-project-name project-root) (string-trim message))
     (ignore-errors
       (kill-buffer (process-buffer process)))
@@ -191,9 +195,11 @@ If PROJECT-ROOT is not specified, use the project root returned from `javacomp-p
      javacomp-response-callbacks)))
 
 (defun javacomp-cleanup-project (project-root)
-  (javacomp-each-buffer project-root
-                        (lambda ()
-                          (javacomp-cleanup-buffer-callbacks)))
+  "Shutdown the server for PROJECT-ROOT and clean up buffers attached to it."
+  (javacomp-each-server-buffer (javacomp-project-server project-root)
+                        (lambda (buffer)
+                          (with-current-buffer buffer
+                            (javacomp-cleanup-buffer-callbacks))))
   (remhash project-root javacomp-servers)
   ;; (remhash project-root javacomp-tsserver-unsupported-commands)
   ;; (remhash project-root javacomp-project-configs)
@@ -255,24 +261,54 @@ If RESPONSE has a field named 'id', dispatch it using
       (javacomp-dispatch-response response)
     (javacomp-dispatch-notification response)))
 
-(defun javacomp-send-request (name args &optional callback)
-  (when (not (javacomp-current-server))
-    (error "Server does not exist. Run M-x javacomp-restart-server to start it again"))
+(defun javacomp-send-request
+    (name args &optional callback skip-initialization-check skip-buffer-sync)
+  "Send a request of NAME to JavaComp server.
 
+ARGS is the value of the 'params' fields of the request body.
 
-  (javacomp-sync-buffer-contents)
+CALLBACK is a function to be called when the response for the
+request is received.
 
-  (let* ((request-id (javacomp-next-request-id))
-         (request `(:method ,name :id ,request-id :params ,args)))
-    (javacomp--send-message request)
-    (when callback
-      (puthash request-id (cons (current-buffer) callback) javacomp-response-callbacks)
-      (accept-process-output nil 0.01))))
+If SKIP-INITIALIZATION-CHECK is non-nil, send the request
+regardless the initialization status of the JavaComp server.
+Otherwise only send the request if the server is initialized.
 
-(defun javacomp-send-notification (name args)
-  (when (not (javacomp-current-server))
-    (error "Server does not exist. Run M-x javacomp-restart-server to start it again"))
-  (javacomp--send-message `(:method ,name :params ,args)))
+If SKIP-BUFFER-SYNC is nil, sync the buffer contents before
+sending the request."
+  (let ((server (javacomp-current-server)))
+    (unless server
+      (error "Server does not exist. Run M-x javacomp-restart-server to start it again"))
+
+    (when (or skip-initialization-check (javacomp--server-initialized-p server))
+      (unless skip-buffer-sync
+        (javacomp-sync-buffer-contents))
+
+      (let* ((request-id (javacomp-next-request-id))
+             (request `(:method ,name :id ,request-id :params ,args)))
+        (javacomp--send-message request)
+        (when callback
+          (puthash request-id (cons (current-buffer) callback) javacomp-response-callbacks)
+          (accept-process-output nil 0.01))))))
+
+(defun javacomp-send-notification (name args &optional skip-initialization-check)
+  "Send a notification to JavaComp server.
+
+A notification is a request without the 'id' field.
+
+NAME is the name of the notification. ARGS is the value of the
+'params' field of the request.
+
+If SKIP-INITIALIZATION-CHECK is non-nil, send the notification
+regardless whether the JavaComp server is initialized or not.
+Otherwise only send the notification if the JavaComp is
+initialized."
+  (let ((server (javacomp-current-server)))
+    (unless server
+      (error "Server does not exist. Run M-x javacomp-restart-server to start it again"))
+    (when (or skip-initialization-check
+              (javacomp--server-initialized-p server))
+      (javacomp--send-message `(:method ,name :params ,args)))))
 
 (defun javacomp--send-message (json-content)
   "Encode and send JSON-CONTENT to JavaComp server.
@@ -286,7 +322,8 @@ JSON-CONTENT will be encoded to a JSON string."
                    "Content-Type: application/javacomp-el;charset=utf8\r\n"
                    "\r\n"
                    content)))
-    (javacomp--log-debug-no-check "~~~~~~~~~~~~~ request ~~~~~~~~~~~~~\n%s" message)
+    (when javacomp-log-request-response
+      (javacomp--log-debug-no-check "~~~~~~~~~~~~~ request ~~~~~~~~~~~~~\n%s" message))
     (process-send-string (javacomp-current-server) message)))
 
 (defun javacomp-send-request-sync (name args)
@@ -307,7 +344,12 @@ The timeout of the request is `javacomp-sync-request-timeout'."
     response))
 
 (defun javacomp-current-server ()
-  (gethash (javacomp-project-root) javacomp-servers))
+  "Return the JavaComp server for the project root of the current buffer."
+  (javacomp-project-server (javacomp-project-root)))
+
+(defun javacomp-project-server (project-root)
+  "Return the JavaComp server for PROJECT-ROOT."
+  (gethash project-root javacomp-servers))
 
 (defun javacomp-next-request-id ()
   "Return the ID of the next request."
@@ -334,7 +376,7 @@ The timeout of the request is `javacomp-sync-request-timeout'."
     (set-process-query-on-exit-flag process nil)
     (process-put process 'project-root (javacomp-project-root))
     (process-put process 'server-id (cl-incf javacomp--server-id))
-    (javacomp--set-server-initialized process nil)
+    (javacomp--server-set-initialized process nil)
     (puthash (javacomp-project-root) process javacomp-servers)
     (message "(%s) JavaComp server started successfully." (javacomp-project-name))
     (javacomp-command:initialize)))
@@ -344,8 +386,35 @@ The timeout of the request is `javacomp-sync-request-timeout'."
   (when (not (javacomp-current-server))
     (javacomp-start-server)))
 
-(defun javacomp-each-buffer (project-root fn)
-  "Callback FN for each buffer within PROJECT-ROOT with javacomp-mode enabled."
+(defun javacomp--server-buffer-list (server)
+  "Get a list of buffers with javacomp-mode enabled and connected to SERVER."
+  (when server
+    (javacomp--server-get server 'javacomp-buffers)))
+
+(defun javacomp--server-add-buffer (server buffer)
+  "Add BUFFER to SERVER.
+
+The added buffer will be added to the list returned by `javacomp--server-buffer-list'"
+  (let ((buffers (and server (javacomp--server-buffer-list server))))
+    (javacomp--server-put server 'javacomp-buffers (cons buffer buffers))))
+
+(defun javacomp--server-remove-buffer (server buffer)
+  "Remove BUFFER from SERVER.
+
+Return the buffer list after removal."
+  (let* ((buffers (javacomp--server-buffer-list server))
+         (remain-buffers (and buffers (delq buffer buffers))))
+    (javacomp--server-put server 'javacomp-buffers remain-buffers)
+    remain-buffers))
+
+(defun javacomp-each-server-buffer (server fn)
+  "Callback FN for each buffer javacomp-mode enabled and attached to SERVER."
+  (-each (javacomp--server-buffer-list server) fn))
+
+(defun javacomp-each-project-buffer (project-root fn)
+  "Callback FN for each buffer within PROJECT-ROOT with javacomp-mode enabled.
+
+FN is called with no argument and the current buffer set to the matched buffer."
   (-each (buffer-list)
     (lambda (buffer)
       (with-current-buffer buffer
@@ -353,19 +422,32 @@ The timeout of the request is `javacomp-sync-request-timeout'."
                    (equal (javacomp-project-root) project-root))
           (funcall fn))))))
 
-(defun javacomp-configure-buffer ()
-  (javacomp-command:did-open-text-document)
-  (let ((buffers (javacomp--server-get 'javacomp-buffers)))
-    (javacomp--server-put 'javacomp-buffers (cons (current-buffer) buffers)))
-  ;; (javacomp-command:configure)
-  )
+(defun javacomp--setup-buffer ()
+  "Attach the current buffer to the JavaComp server.
 
-(defun javacomp-cleanup-buffer ()
-  (javacomp-command:did-close-text-document)
-  (let* ((buffers (javacomp--server-get 'javacomp-buffers))
-         (remain-buffers (delq (current-buffer) buffers)))
-    (if remain-buffers
-        (javacomp--server-put 'javacomp-buffers remain-buffers)
+If the server is initialized, send textDocument/didOpen command
+to it. Otherwise queue the command until it's initialized.
+
+The current buffer will be added to the server's buffer list."
+  (-when-let (server (javacomp-current-server))
+    (when (javacomp--server-initialized-p server)
+      (javacomp-command:did-open-text-document)
+      (javacomp--server-add-buffer server (current-buffer)))))
+
+(defun javacomp--cleanup-buffer ()
+  "Detach the current buffer from the JavaComp server.
+
+If the server is initialized, send textDocument/didClose command to it.
+
+The current buffer will be removed from the server's buffer list.
+If the current buffer is the last buffer associated with the
+server, shutdown the server."
+  (let ((server (javacomp-current-server)))
+    (when (javacomp--server-initialized-p server)
+      (javacomp-command:did-close-text-document))
+    (javacomp-cleanup-buffer-callbacks)
+    (unless (javacomp--server-remove-buffer server (current-buffer))
+      ;; No buffer is using the server, shut it down.
       (javacomp-shutdown-current-project))))
 
 (defun javacomp-handle-change (_beg _end _len)
@@ -447,14 +529,18 @@ Offset is 0-based."
         (javacomp-send-notification "textDocument/didChange"
                                     `(:textDocument ,text-document :contentChanges [,content-change]))))))
 
-(defun javacomp--set-server-initialized (server initialized)
+(defun javacomp--server-set-initialized (server initialized)
   "Set the initialized state of SERVER to INITIALIZED."
-  (when server
-    (process-put server 'initialized initialized)))
+  (javacomp--server-put server 'initialized initialized))
 
 (defun javacomp--server-initialized-p (server)
-  "Determine whether SERVER is initialized."
-  (process-get server 'initialized))
+  "Return whether SERVER is initialized.
+
+The SERVER is initialized if it responses to the initialize
+command, and no shutdown command is sent after that. If SERVER is
+not initialized, only initialize and shutdown commands are
+allowed."
+  (javacomp--server-get server 'initialized))
 
 
 ;;; Helpers
@@ -467,7 +553,7 @@ Offset is 0-based."
   "If RESPONSE is a successful response, execute BODY."
   (declare (indent 1))
   `(if (javacomp-response-success-p ,response)
-       ,@body
+       (progn ,@body)
      (-when-let (err (plist-get response :error))
        (javacomp--log-debug "response error: %s" err))
      nil))
@@ -479,19 +565,31 @@ Offset is 0-based."
      (javacomp-on-response-success ,response
        ,@body)))
 
-(defun javacomp--server-get (propname)
-  "Return the value of current server's PROPNAME property."
-  (-when-let (server (javacomp-current-server))
+(defun javacomp--server-get (server propname)
+  "Return the value of SERVER's PROPNAME property."
+  (when server
     (process-get server propname)))
 
-(defun javacomp--server-put (propname value)
-  "Change current server's PROPNAME property to VALUE."
-  (-when-let (server (javacomp-current-server))
+(defun javacomp--server-put (server propname value)
+  "Change SERVER's PROPNAME property to VALUE."
+  (when server
     (process-put server propname value)))
+
+(defun javacomp--current-server-get (propname)
+  "Return the value of current server's PROPNAME property."
+  (javacomp--server-get (javacomp-current-server) propname))
+
+(defun javacomp--current-server-put (propname value)
+  "Change current server's PROPNAME property to VALUE."
+  (javacomp--server-put (javacomp-current-server) propname value))
 
 (defun javacomp--current-server-id ()
   "Return the ID of the current server, or nil if server is not started."
-  (javacomp--server-get 'server-id))
+  (javacomp--current-server-get 'server-id))
+
+(defun javacomp--server-project-root (server)
+  "Return the project root associated with SERVER."
+  (javacomp--server-get server 'project-root))
 
 (defun javacomp--document-opened ()
   "Determine whether textDocument/didOpen notification is sent to the current server."
@@ -746,20 +844,41 @@ new window if possible."
 
 (defun javacomp-command:initialize ()
   "Send `initialize' request to JavaComp server."
-  (let ((callback (lambda (resp)
-                    (javacomp-on-response-success resp
-                      (javacomp--set-server-initialized (javacomp-current-server) t))))
-        (root-uri (concat "file://" (javacomp-project-root)))
-        (options (javacomp--initialization-options)))
+  (let* ((server (javacomp-current-server))
+         (callback (lambda (response)
+                     (javacomp--on-initialize-response server response)))
+         (root-uri (concat "file://" (javacomp-project-root)))
+         (options (javacomp--initialization-options)))
     (javacomp-send-request "initialize"
                            `(:processId ,(emacs-pid) :rootUri ,root-uri :initializationOptions ,options)
-                           callback)))
+                           callback
+                           t
+                           t)))
+
+(defun javacomp--on-initialize-response (server response)
+  "Callback function for initialize command.
+
+SERVER is the JavaComp server. RESPONSE is the response for
+initialize command sent from the SERVER.
+
+Set the initialized status of SERVER to t and set up the buffers
+under the project root of SERVER."
+  (javacomp-on-response-success response
+    (javacomp--server-set-initialized server t)
+    (javacomp-each-project-buffer (javacomp--server-project-root server)
+                                  #'javacomp--setup-buffer)))
 
 (defun javacomp-command:shutdown ()
   "Send `shutdown' request to JavaComp server."
-  (let ((callback (lambda (_resp)
-                    (javacomp--set-server-initialized (javacomp-current-server) nil))))
-    (javacomp-send-request "shutdown" nil callback)))
+  (let* ((server (javacomp-current-server))
+         (callback (lambda (_resp)
+                    (javacomp--server-set-initialized server nil))))
+    ;; Shutdown may be sent when the last buffer associated with the server is
+    ;; being kill. In this case, when the response is received, the buffer is no
+    ;; longer alive. Dispatching a response to callback associated with a killed
+    ;; buffer will cause error. To avoid that, use the server's buffer.
+    (with-current-buffer (process-buffer server)
+      (javacomp-send-request "shutdown" nil callback t t))))
 
 (defun javacomp-command:did-open-text-document ()
   "Send `textDocument/didOpen' notification to JavaComp server."
@@ -780,7 +899,7 @@ new window if possible."
 
 (defun javacomp-notification:exit ()
   "Send `exit' notification to JavaComp server."
-  (javacomp-send-notification "exit" nil))
+  (javacomp-send-notification "exit" nil t))
 
 ;;; eldoc
 
@@ -952,7 +1071,7 @@ on the response from JavaComp server."
 (defun javacomp--enable ()
   "Setup `javacomp-mode' in current buffer."
   (javacomp-start-server-if-required)
-  (javacomp-configure-buffer)
+  (javacomp--setup-buffer)
   (set (make-local-variable 'eldoc-documentation-function)
        'javacomp-eldoc-function)
   ;; (set (make-local-variable 'imenu-auto-rescan) t)
@@ -962,17 +1081,15 @@ on the response from JavaComp server."
   (add-hook 'after-save-hook 'javacomp-sync-buffer-contents nil t)
   ;; (add-hook 'after-save-hook 'javacomp-auto-compile-file nil t)
   (add-hook 'after-change-functions 'javacomp-handle-change nil t)
-  (add-hook 'kill-buffer-hook 'javacomp-cleanup-buffer nil t)
-  (add-hook 'hack-local-variables-hook 'javacomp-configure-buffer nil t))
+  (add-hook 'kill-buffer-hook 'javacomp--cleanup-buffer nil t))
 
 (defun javacomp--disable ()
   "Disable `javacomp-mode' in current buffer and clean up."
   (remove-hook 'after-save-hook 'javacomp-sync-buffer-contents)
   ;; (remove-hook 'after-save-hook 'javacomp-auto-compile-file)
   (remove-hook 'after-change-functions 'javacomp-handle-change)
-  (remove-hook 'kill-buffer-hook 'javacomp-cleanup-buffer)
-  (remove-hook 'hack-local-variables-hook 'javacomp-configure-buffer)
-  (javacomp-cleanup-buffer)
+  (remove-hook 'kill-buffer-hook 'javacomp--cleanup-buffer)
+  (javacomp--cleanup-buffer)
   ;; (set (make-local-variable 'imenu-auto-rescan) t)
   ;; (set (make-local-variable 'imenu-create-index-function)
   ;;      'javacomp-imenu-index)
@@ -994,9 +1111,11 @@ on the response from JavaComp server."
   "Restarts the JavaComp server for the current project if enabled."
   (interactive)
   (-when-let (server (javacomp-current-server))
-    (delete-process server))
-  (javacomp-start-server)
-  (javacomp-each-buffer (javacomp-project-root) #'javacomp-configure-buffer))
+    (if (process-live-p server)
+        (delete-process server)
+      (javacomp--log-debug "JavaComp server died but not cleaned up.")
+      (javacomp-cleanup-project (javacomp-project-root))))
+  (javacomp-start-server))
 
 (defun javacomp-jump-to-definition ()
   "Jump to the definition of the symbol at point.
