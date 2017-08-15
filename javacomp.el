@@ -1016,10 +1016,7 @@ under the project root of SERVER."
        (put-text-property 0 1 'text-document-position text-document-position label)
        (put-text-property 0 1 'completion-item completion-item label)
        label))
-   (-filter
-    (lambda (completion-item)
-      (string-prefix-p prefix (plist-get completion-item :label)))
-    (plist-get completion-list :items))))
+    (plist-get completion-list :items)))
 
 (defun javacomp-command:completion-text-document (prefix cb)
   "Send textDocument/completion command to JavaComp server.
