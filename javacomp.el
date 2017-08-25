@@ -1048,6 +1048,7 @@ on the response from JavaComp server."
                         (javacomp-command:completion-text-document arg cb))))
     (sorted t)
     (ignore-case t)
+    (no-cache t)
     ;; (meta (javacomp-completion-meta arg))
     (annotation (javacomp-completion-annotation arg))
     ;; (doc-buffer (javacomp-completion-doc-buffer arg))
