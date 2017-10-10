@@ -43,17 +43,16 @@
   :prefix "javacomp-"
   :group 'tools)
 
+(defcustom javacomp-server-install-dir (locate-user-emacs-file "javacomp/")
+  "Install directory for JavaComp server.
+Requires to be ended with a slash."
+  :group 'javacomp
+  :risky t
+  :type 'directory)
+
 (defcustom javacomp-sync-request-timeout 2
   "The number of seconds to wait for a sync response."
   :type 'integer
-  :group 'javacomp)
-
-(defcustom javacomp-server-jar "~/bin/JavaComp_deploy.jar"
-  "Name of JavaComp jar file to run instead of the bundled JavaComp server jar.
-
-This may either be an absolute path or a relative path. Relative
-paths are resolved against the project root directory."
-  :type '(choice (const nil) string)
   :group 'javacomp)
 
 (defcustom javacomp-java-executable "java"
@@ -111,6 +110,14 @@ This option is for debugging purposes."
 If it's non-nil, requests and responses are logged to a buffer named *javacomp-debug*."
   :type 'boolean
   :group 'javacomp)
+
+(defconst javacomp-latest-release-url
+  "https://api.github.com/repos/tigersoldier/JavaComp/releases/latest"
+  "URL to retrieve the latest release of JavaComp server.")
+
+(defun javacomp--server-jar-path ()
+  "Return the path to the JavaComp server JAR file."
+  (expand-file-name "javacomp.jar" javacomp-server-install-dir))
 
 (defmacro javacomp-def-permanent-buffer-local (name &optional init-value)
   "Declare NAME as buffer local variable with initial value INIT-VALUE."
@@ -360,14 +367,15 @@ The timeout of the request is `javacomp-sync-request-timeout'."
   (when (javacomp-current-server)
     (error "Server already exist"))
 
+  (unless (file-exists-p (javacomp--server-jar-path))
+    (error "JavaComp server doesn't not exist.\nUse `M-x javacomp-install-server' to install the server"))
+
   (message "(%s) Starting JavaComp server..." (javacomp-project-name))
   (let* ((default-directory (javacomp-project-root))
          (buf (generate-new-buffer javacomp-server-buffer-name))
-         (jar (and javacomp-server-jar
-                          (expand-file-name javacomp-server-jar)))
          ; Use pipe for process connection, because pty might transform \r to \n.
          (process-connection-type nil)
-         (commands `(,javacomp-java-executable ,@javacomp-java-options "-jar" ,jar))
+         (commands `(,javacomp-java-executable ,@javacomp-java-options "-jar" ,(javacomp--server-jar-path)))
          (process
           (apply #'start-file-process "javacomp" buf commands)))
     (set-process-coding-system process 'utf-8-unix 'utf-8-unix)
@@ -1032,6 +1040,9 @@ on the response from JavaComp server."
                               (when (javacomp-response-success-p response)
                                 (javacomp-annotate-completions (plist-get response :result) prefix text-document-position)))))))
 
+(defun javacomp--insert-completion-text (candidate)
+  )
+
 ;;;###autoload
 (defun company-javacomp (command &optional arg &rest ignored)
   (interactive (list 'interactive))
@@ -1052,6 +1063,7 @@ on the response from JavaComp server."
     ;; (meta (javacomp-completion-meta arg))
     (annotation (javacomp-completion-annotation arg))
     ;; (doc-buffer (javacomp-completion-doc-buffer arg))
+    (post-completion (javacomp--insert-completion-text arg))
     ))
 
 (eval-after-load 'company
@@ -1136,6 +1148,48 @@ If more than one definition is returned, list all definitions in a separate buff
                         (t
                          (javacomp--list-locations locations))))))))
     (javacomp-send-request "textDocument/definition" (javacomp--text-document-position) cb)))
+
+;;;###autoload
+(defun javacomp-install-server (prompt-exists)
+  "Download the JavaComp server JAR file if it does not exist."
+  (interactive '(t))
+  (let ((jar-file (javacomp--server-jar-path)))
+    (if (file-exists-p jar-file)
+        (and prompt-exists (message "JavaComp server already exists."))
+      (javacomp--download-server))))
+
+;;;###autoload
+(defun javacomp-update-server ()
+  (interactive)
+  (javacomp--download-server #'javacomp-restart-server))
+
+(defun javacomp--download-server (&optional callback)
+  (message "Getting latest JavaComp server...")
+  (url-retrieve javacomp-latest-release-url #'javacomp--latest-release-callback `(,callback)))
+
+(defun javacomp--latest-release-callback (stats callback)
+  "Handle the `url-retrive' callback for JavaComp latest release request.
+
+See https://developer.github.com/v3/repos/releases/#get-the-latest-release
+"
+  (search-forward "\n\n")
+  (if-let (err (plist-get stats :error))
+      (error "Failed to get the latest release of JavaComp server: %s" (car err))
+    (let* ((release (json-read))
+           (assets (alist-get 'assets release))
+           (jar-asset (seq-find (lambda (asset)
+                                  (s-match "^javacomp.*\\.jar$" (alist-get 'name asset)))
+                                assets))
+           (jar-url (alist-get 'browser_download_url jar-asset))
+           (release-version (alist-get 'tag_name release)))
+      (if jar-url
+          (progn
+            (message "Found JavaComp %s, downloading..." release-version)
+            (make-directory (expand-file-name javacomp-server-install-dir) t)
+            (url-copy-file jar-url (javacomp--server-jar-path) t)
+            (when (functionp callback)
+              (funcall callback)))
+        (error "Fail to get the URL of the JavaComp server.")))))
 
 ;;;###autoload
 (define-minor-mode javacomp-mode
